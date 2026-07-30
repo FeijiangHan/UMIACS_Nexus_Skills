@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Quick overview of your current SLURM allocations on Nexus.
+# Run with no args for a summary; pass -v for a fuller `sinfo` view of the
+# lab partition as well (slower, sinfo can take a while on this cluster).
+set -euo pipefail
+
+echo "== Your jobs (squeue -u \$USER) =="
+squeue -u "$USER" -O "JobID:.10,State:.12,Partition:.14,QOS:.16,tres-per-node:.20,TimeUsed:.11,TimeLimit:.11,NodeList:.20"
+
+JOBID="${GPU_JOBID:-$(cat ~/.nexus/current_jobid 2>/dev/null || true)}"
+if [ -n "$JOBID" ]; then
+  echo
+  echo "== Default gpurun/gpush target: job $JOBID =="
+  squeue -j "$JOBID" -h -o '  state=%T  node=%N  time_left=%L' 2>/dev/null \
+    || echo "  (job not found -- it may have ended; run gpualloc again)"
+fi
+
+if [ "${1:-}" = "-v" ]; then
+  echo
+  echo "== cml-furongh partition (sinfo, may be slow) =="
+  sinfo -p cml-furongh -o "%N %T %G %C %m" 2>&1 || true
+fi
+
+echo
+echo "To release an allocation: scancel <jobid>   (or: scancel \$(cat ~/.nexus/current_jobid))"

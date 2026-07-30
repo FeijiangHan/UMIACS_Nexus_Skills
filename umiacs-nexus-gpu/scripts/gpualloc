@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Acquire ONE long-lived SLURM allocation on the Nexus/CML cluster using a named
+# lab profile, and remember its job id for gpurun/gpush.
+#
+# Usage: gpualloc <profile> [time] [count]
+#
+# Profiles (edit the case block below if your lab's account/partition names
+# change -- confirm with `show_assoc` / `sacctmgr show assoc user=$USER` and
+# `sinfo -p <partition>` if allocations are rejected):
+#
+#   furongh     Dedicated lab nodes (account=cml-furongh, partition=cml-furongh,
+#               qos=cml-high_long, max wall 14 days, max 8 GPUs/user under this
+#               QoS at once). Highest priority, use this first. count = number
+#               of GPUs (default 8, one full node).
+#   furongh1    Same as furongh but count defaults to 1 GPU, for quick tests
+#               that don't need a whole node.
+#   tron        Cluster-wide shared partition `tron`, qos=high, RTX A6000 GPUs.
+#               Use when lab nodes are full/down. Shared with other groups so
+#               expect lower per-user GPU caps, enforced by the qos, not this
+#               script.
+#   scavenger   Institute-wide preemptible partition (partition=cml-scavenger,
+#               qos=cml-scavenger, max wall 3 days, cluster-wide 24-GPU cap
+#               shared by all CML scavenger users). Your job can be killed the
+#               moment a higher-priority cml-* job needs the GPU back -- only
+#               use this for restartable / checkpointed work.
+#
+# See references/cluster-tiers.md in this skill for the full tier writeup
+# (QoS limits table, billing caveats) and how to verify these names live on
+# the cluster before relying on them.
+set -euo pipefail
+
+PROFILE="${1:-}"
+TIME="${2:-}"
+COUNT="${3:-}"
+
+case "$PROFILE" in
+  furongh)
+    COUNT="${COUNT:-8}"
+    FLAGS=(--account=cml-furongh --partition=cml-furongh --qos=cml-high_long
+           --gres=gpu:"$COUNT" --cpus-per-task=16 --mem=256G)
+    DEF_TIME=72:00:00 ;;
+  furongh1)
+    COUNT="${COUNT:-1}"
+    FLAGS=(--account=cml-furongh --partition=cml-furongh --qos=cml-high_long
+           --gres=gpu:"$COUNT" --cpus-per-task=16 --mem=32G)
+    DEF_TIME=12:00:00 ;;
+  tron)
+    COUNT="${COUNT:-4}"
+    FLAGS=(--partition=tron --qos=high --gres=gpu:rtxa6000:"$COUNT"
+           --cpus-per-task=16 --mem=128G)
+    DEF_TIME=48:00:00 ;;
+  scavenger)
+    COUNT="${COUNT:-1}"
+    FLAGS=(--account=cml-furongh --partition=cml-scavenger --qos=cml-scavenger
+           --gres=gpu:"$COUNT" --cpus-per-task=16 --mem=64G)
+    DEF_TIME=24:00:00 ;;
+  *)
+    echo "Usage: gpualloc {furongh|furongh1|tron|scavenger} [time] [count]" >&2
+    echo "  e.g. gpualloc furongh1 8:00:00 1     # one GPU on the lab partition" >&2
+    echo "  e.g. gpualloc tron 24:00:00 2        # two rtxa6000 on the shared tron partition" >&2
+    exit 1 ;;
+esac
+
+TIME="${TIME:-$DEF_TIME}"
+echo "Requesting: ${FLAGS[*]} --time=$TIME --no-shell"
+
+# Capture the job id straight from salloc's output (more reliable than squeue).
+OUT="$(salloc "${FLAGS[@]}" --time="$TIME" --no-shell 2>&1)"
+echo "$OUT"
+JOBID="$(printf '%s\n' "$OUT" | grep -oE 'job allocation [0-9]+' | grep -oE '[0-9]+' | tail -1)"
+if [ -z "$JOBID" ]; then
+  echo "Could not parse job id; falling back to squeue." >&2
+  JOBID="$(squeue -u "$USER" --states=RUNNING -h -O JobID | tail -1)"
+fi
+mkdir -p ~/.nexus
+printf '%s\n' "$JOBID" > ~/.nexus/current_jobid
+echo "Allocated job id: $JOBID  (profile=$PROFILE count=$COUNT time=$TIME)"
+echo "This is now the default target for gpurun/gpush."
+echo "To pin THIS session to this job (so other sessions' allocations don't change it):"
+echo "    export GPU_JOBID=$JOBID"

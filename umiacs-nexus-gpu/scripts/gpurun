@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Run a command inside the persistent allocation created by gpualloc.
+# Uses an interactive bash so ~/.bashrc (conda init, module loads, etc.) is
+# sourced -- this is what makes `conda activate myenv` work inside gpurun.
+#
+# Target job is chosen as: $GPU_JOBID (session-scoped pin) if set,
+# otherwise the default in ~/.nexus/current_jobid (the most recent gpualloc).
+#
+# Use this for SHORT commands only (quick checks, small evals, a few minutes
+# of debugging). Anything that will run more than ~30 min should be a
+# prepared sbatch script the user submits themselves -- see SKILL.md.
+set -euo pipefail
+JOBID="${GPU_JOBID:-}"
+if [ -z "$JOBID" ]; then
+  JOBID="$(cat ~/.nexus/current_jobid 2>/dev/null || true)"
+fi
+if [ -z "$JOBID" ]; then
+  echo "No active allocation. Run 'gpualloc <profile>' first." >&2
+  exit 1
+fi
+STATE="$(squeue -j "$JOBID" -h -o '%T' 2>/dev/null || true)"
+if [ "$STATE" != "RUNNING" ]; then
+  echo "Allocation $JOBID is not RUNNING (state: ${STATE:-gone/expired})." >&2
+  echo "Run 'gpualloc <profile>' again." >&2
+  exit 1
+fi
+exec srun --jobid="$JOBID" --overlap --ntasks=1 bash -ic "$*"

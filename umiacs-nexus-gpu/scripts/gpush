@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Attach to one of your RUNNING SLURM allocations from your own terminal.
+#   gpush                  -> pick a job (prompts if more than one), open a shell
+#   gpush <cmd...>         -> run one command in the (single/picked) allocation
+#   gpush <jobid>          -> open a shell in that specific job
+#   gpush <jobid> <cmd...> -> run a command in that specific job
+set -euo pipefail
+
+FMT='JobID:.18,tres-per-node:.26,Partition:.12,TimeUsed:.11,TimeLimit:.11,NodeList:.16'
+
+TARGET=""
+# If the first arg is a pure number, treat it as an explicit job id.
+if [ "${1:-}" ] && [[ "$1" =~ ^[0-9]+$ ]]; then
+  TARGET="$1"; shift
+fi
+
+if [ -z "$TARGET" ]; then
+  mapfile -t JOBS < <(squeue -u "$USER" -h -t RUNNING -O "$FMT" 2>/dev/null || true)
+  if [ "${#JOBS[@]}" -eq 0 ]; then
+    echo "No RUNNING allocations. Run 'gpualloc <profile> [time] [count]' first." >&2
+    exit 1
+  elif [ "${#JOBS[@]}" -eq 1 ]; then
+    TARGET="$(awk '{print $1}' <<<"${JOBS[0]}")"
+  else
+    echo "Multiple RUNNING allocations:" >&2
+    echo "      JOBID            GRES               PART    USED       LIMIT      NODE" >&2
+    i=1
+    for row in "${JOBS[@]}"; do
+      printf '  [%d] %s\n' "$i" "$row" >&2
+      i=$((i+1))
+    done
+    printf 'Enter number (or a job id): ' >&2
+    read -r choice || true
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#JOBS[@]}" ]; then
+      TARGET="$(awk '{print $1}' <<<"${JOBS[$((choice-1))]}")"
+    else
+      TARGET="$choice"
+    fi
+  fi
+fi
+
+STATE="$(squeue -j "$TARGET" -h -o '%T' 2>/dev/null || true)"
+if [ "$STATE" != "RUNNING" ]; then
+  echo "Job $TARGET is not RUNNING (state: ${STATE:-gone/expired})." >&2
+  exit 1
+fi
+
+if [ "$#" -eq 0 ]; then
+  exec srun --jobid="$TARGET" --overlap --pty bash -i
+else
+  exec srun --jobid="$TARGET" --overlap --pty "$@"
+fi
